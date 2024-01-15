@@ -1,0 +1,19 @@
+[package]
+name = "og-profiles-nft-test2"
+version = "0.0.1"
+authors = []
+
+[addresses]
+kade = "0x80aa61eeb9c5c244dd450696c3a37eae989bb825fdf573a78919218b53115ba7"
+[dev-addresses]
+
+[dependencies.AptosFramework]
+git = "https://github.com/aptos-labs/aptos-core.git"
+rev = "mainnet"
+subdir = "aptos-move/framework/aptos-framework"
+[dependencies.AptosTokenObjects]
+git = "https://github.com/aptos-labs/aptos-core.git"
+subdir = "aptos-move/framework/aptos-token-objects/"
+rev = "mainnet"
+
+[dev-dependencies]
