@@ -5,7 +5,7 @@
 **/
 
 
-module kade::OGProfilesNftTest2 {
+module kade::OGProfilesNftTest4 {
 
     use std::option;
     use std::signer;
@@ -40,13 +40,19 @@ module kade::OGProfilesNftTest2 {
     const PIOONER_2_URI: vector<u8> = b"https://orange-urban-sloth-806.mypinata.cloud/ipfs/Qmaw8phxUiCeEUkhDBTztxDtV9TXwzYEdNiRY7oiBjodVV?_gl=1*mv0e7f*_ga*OTAyMjc0MDk2LjE3MDM1Nzk3MDE.*_ga_5RMPXG14TE*MTcwNTI5NDI1MS41LjEuMTcwNTI5NDI4MS4zMC4wLjA.";
 
     // seed for the module's resource account
-    const SEED: vector<u8> = b"og profiles";
+    const SEED: vector<u8> = b"og profiles ::test-4";
 
     // Error codes
     const EUserNameExists: u64 = 1;
+    const EAddressDoesNotExist: u64 = 2;
+    const EProfileDoesNotExist: u64 = 3;
+    const EVariantDoesNotExist: u64 = 4;
+
 
     struct Profile has key {
-        name: String
+        name: String,
+        variant: u64,
+        uri: String,
     }
 
     struct State has key {
@@ -134,6 +140,7 @@ module kade::OGProfilesNftTest2 {
         let resource_signer = account::create_signer_with_capability(&state.signer_capability);
         let username = *simple_map::borrow(&state.claimed_usernames, &signer::address_of(claimer));
         let count = string_utils::to_string(&state.minted_profiles);
+        state.minted_profiles = state.minted_profiles + 1;
         let profile_nft_uri = string::utf8(b"");
 
         if(variant == 1) {
@@ -167,7 +174,9 @@ module kade::OGProfilesNftTest2 {
         object::transfer_raw(&resource_signer, nft_address, signer::address_of(claimer));
 
         let profile = Profile {
-            name:  profile_name
+            name:  profile_name,
+            variant,
+            uri: profile_nft_uri,
         };
 
         move_to<Profile>(&nft_signer, profile);
@@ -200,11 +209,57 @@ module kade::OGProfilesNftTest2 {
 
     // View single username
     #[view]
-    public fun get_claimed_username(claimer: &signer): String acquires  State {
+    public fun get_claimed_username(claimer_address: address): String acquires  State {
+
         let resource_address = account::create_resource_address(&@kade, SEED);
         let state = borrow_global<State>(resource_address);
-        let username = simple_map::borrow(&state.claimed_usernames, &signer::address_of(claimer));
+        // check if address exists
+        assert!(simple_map::contains_key(&state.claimed_usernames, &claimer_address), EAddressDoesNotExist);
+        let username = simple_map::borrow(&state.claimed_usernames, &claimer_address);
         *username
+    }
+
+    // Check if a username has already been claimed
+    #[view]
+    public fun is_username_claimed(username: String): bool acquires  State {
+        let resource_address = account::create_resource_address(&@kade, SEED);
+        let state = borrow_global<State>(resource_address);
+        let values = simple_map::values(&state.claimed_usernames);
+        vector::contains(&values, &username)
+    }
+
+    // Check if a user already has a profile nft
+    #[view]
+    public fun has_profile_nft(claimer_address: address): bool acquires  State {
+        let resource_address = account::create_resource_address(&@kade, SEED);
+        let state = borrow_global<State>(resource_address);
+        // check if address exists
+        if(!simple_map::contains_key(&state.minted_nfts, &claimer_address)){
+            return false
+        };
+        let nft_address = *simple_map::borrow(&state.minted_nfts, &claimer_address);
+        exists<Profile>(nft_address)
+    }
+
+    // Get the user's profile nft
+    #[view]
+    public fun get_profile_nft(claimer_address: address): (String, u64, String) acquires Profile, State {
+        let resource_address = account::create_resource_address(&@kade, SEED);
+        let state = borrow_global<State>(resource_address);
+        // check if address exists
+        assert!(simple_map::contains_key(&state.minted_nfts, &claimer_address), EAddressDoesNotExist);
+        let nft_address = *simple_map::borrow(&state.minted_nfts, &claimer_address);
+        let profile = borrow_global<Profile>(nft_address);
+        (profile.name, profile.variant, profile.uri)
+    }
+
+    // Check if a user already exists
+    #[view]
+    public fun user_exists(claimer_address: address): bool acquires  State {
+        let resource_address = account::create_resource_address(&@kade, SEED);
+        let state = borrow_global<State>(resource_address);
+        // check if address exists
+        simple_map::contains_key(&state.claimed_usernames, &claimer_address)
     }
 
 
@@ -324,6 +379,104 @@ module kade::OGProfilesNftTest2 {
         assert!(profile.name == expected_profile_name, 10);
     }
 
+    // test username is claimed checker
+    #[test(admin = @kade, user = @0xCED, aptos_framework = @aptos_framework)]
+    fun test_is_username_claimed_success(admin: &signer, user: &signer, aptos_framework: &signer) acquires State {
+        let admin_address = signer::address_of(admin);
+        let user_address = signer::address_of(user);
+        let aptos_framework_address = signer::address_of(aptos_framework);
 
+        let aptos =account::create_account_for_test(aptos_framework_address);
+        timestamp::set_time_has_started_for_testing(&aptos);
+        account::create_account_for_test(admin_address);
+        account::create_account_for_test(user_address);
+
+        init_module(admin);
+
+        let username_to_claim = string::utf8(b"kade");
+
+        claim_username(user, username_to_claim);
+
+        let is_claimed = is_username_claimed(username_to_claim);
+
+        assert!(is_claimed == true, 7);
+    }
+
+    // test username is claimed checker
+    #[test(admin = @kade, user = @0xCED, aptos_framework = @aptos_framework)]
+    fun test_is_username_claimed_fails(admin: &signer, user: &signer, aptos_framework: &signer) acquires State {
+        let admin_address = signer::address_of(admin);
+        let user_address = signer::address_of(user);
+        let aptos_framework_address = signer::address_of(aptos_framework);
+
+        let aptos =account::create_account_for_test(aptos_framework_address);
+        timestamp::set_time_has_started_for_testing(&aptos);
+        account::create_account_for_test(admin_address);
+        account::create_account_for_test(user_address);
+
+        init_module(admin);
+
+        let username_to_claim = string::utf8(b"kade");
+
+        claim_username(user, username_to_claim);
+
+        let is_claimed = is_username_claimed(string::utf8(b"not kade"));
+
+        assert!(is_claimed == false, 7);
+    }
+
+    // test nft minted by user checker
+    #[test(admin = @kade, user = @0xCED, aptos_framework = @aptos_framework)]
+    fun test_has_profile_nft_success(admin: &signer, user: &signer, aptos_framework: &signer) acquires State {
+        let admin_address = signer::address_of(admin);
+        let user_address = signer::address_of(user);
+        let aptos_framework_address = signer::address_of(aptos_framework);
+
+        let aptos =account::create_account_for_test(aptos_framework_address);
+        timestamp::set_time_has_started_for_testing(&aptos);
+        account::create_account_for_test(admin_address);
+        account::create_account_for_test(user_address);
+
+        init_module(admin);
+
+        let username_to_claim = string::utf8(b"kade");
+
+        claim_username(user, username_to_claim);
+
+        mint_profile_nft(user, 1);
+
+        let has_nft = has_profile_nft(user_address);
+
+        assert!(has_nft == true, 7);
+    }
+
+    // test nft profile checker
+    #[test(admin = @kade, user = @0xCED, aptos_framework = @aptos_framework)]
+    fun test_get_profile_nft_success(admin: &signer, user: &signer, aptos_framework: &signer) acquires State, Profile {
+        let admin_address = signer::address_of(admin);
+        let user_address = signer::address_of(user);
+        let aptos_framework_address = signer::address_of(aptos_framework);
+
+        let aptos =account::create_account_for_test(aptos_framework_address);
+        timestamp::set_time_has_started_for_testing(&aptos);
+        account::create_account_for_test(admin_address);
+        account::create_account_for_test(user_address);
+
+        init_module(admin);
+
+        let username_to_claim = string::utf8(b"kade");
+
+        claim_username(user, username_to_claim);
+
+        mint_profile_nft(user, 1);
+
+        let (profile_name, variant, uri) = get_profile_nft(user_address);
+
+        let expected_profile_name = string_utils::format2(&b"Profile #{} : {}",string_utils::to_string(&0), username_to_claim);
+
+        assert!(profile_name == expected_profile_name, 7);
+        assert!(variant == 1, 8);
+        assert!(uri == string::utf8(EXPLORER_1_URI), 9);
+    }
 
 }
