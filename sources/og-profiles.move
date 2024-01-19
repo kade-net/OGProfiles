@@ -47,12 +47,18 @@ module kade::OGProfilesNftTest4 {
     const EAddressDoesNotExist: u64 = 2;
     const EProfileDoesNotExist: u64 = 3;
     const EVariantDoesNotExist: u64 = 4;
+    const EOperationNotPermitted: u64 = 5;
 
 
     struct Profile has key {
         name: String,
         variant: u64,
         uri: String,
+    }
+
+    struct Friends has store, copy, drop {
+        count: u64,
+        friends: vector<address>,
     }
 
     struct State has key {
@@ -63,8 +69,15 @@ module kade::OGProfilesNftTest4 {
         collection_address: address,
         minted_profiles: u64,
         profile_mint_event: EventHandle<ProfileMintEvent>,
+        referral_event: EventHandle<ReffaralEvent>,
+        friend_map: SimpleMap<address, Friends>,
     }
 
+    struct ReffaralEvent has store, drop {
+        referrer: address, // the user who referred
+        referee: address, // the user who was referred
+        timestamp_seconds: u64,
+    }
 
     struct ClaimUsernameEvent has store, drop {
         owner: address,
@@ -109,6 +122,8 @@ module kade::OGProfilesNftTest4 {
             profile_mint_event: account::new_event_handle<ProfileMintEvent>(&resource_signer),
             minted_profiles: 0,
             minted_nfts: simple_map::new(),
+            referral_event: account::new_event_handle<ReffaralEvent>(&resource_signer),
+            friend_map: simple_map::new(),
         };
 
         move_to(&resource_signer, state)
@@ -119,16 +134,120 @@ module kade::OGProfilesNftTest4 {
         username: String,
     ) acquires State {
         let resource_address = account::create_resource_address(&@kade, SEED);
-        assert_username_unclaimed(username);
+
 
         let state = borrow_global_mut<State>(resource_address);
+        assert_username_unclaimed(username, &state.claimed_usernames);
 
 
         simple_map::add(&mut state.claimed_usernames, signer::address_of(claimer), username);
 
+
+        simple_map::add(&mut state.friend_map, signer::address_of(claimer), Friends{
+            count: 0,
+            friends: vector::empty(),
+        });
+
         event::emit_event(&mut state.claim_username_event, ClaimUsernameEvent{
             username,
             owner: signer::address_of(claimer),
+            timestamp_seconds: timestamp::now_seconds(),
+        });
+    }
+
+    public entry fun claim_username_reffered(
+        claimer: &signer,
+        username: String,
+        referrer:address,
+    ) acquires State {
+        let resource_address = account::create_resource_address(&@kade, SEED);
+
+
+        let state = borrow_global_mut<State>(resource_address);
+        assert_username_unclaimed(username, &state.claimed_usernames);
+
+
+        simple_map::add(&mut state.claimed_usernames, signer::address_of(claimer), username);
+
+
+        simple_map::add(&mut state.friend_map, signer::address_of(claimer), Friends{
+            count: 0,
+            friends: vector::empty(),
+        });
+
+
+
+            assert!(simple_map::contains_key(&state.claimed_usernames, &referrer), EAddressDoesNotExist);
+            let friends = simple_map::borrow_mut(&mut state.friend_map, &referrer);
+
+            friends.count = friends.count + 1;
+            vector::push_back(&mut friends.friends, signer::address_of(claimer));
+
+            event::emit_event(&mut state.referral_event, ReffaralEvent{
+                referrer,
+                referee: signer::address_of(claimer),
+                timestamp_seconds: timestamp::now_seconds(),
+            });
+
+
+        event::emit_event(&mut state.claim_username_event, ClaimUsernameEvent{
+            username,
+            owner: signer::address_of(claimer),
+            timestamp_seconds: timestamp::now_seconds(),
+        });
+    }
+
+    // let kade cover the gas cost of claiming a username
+    public entry fun free_claim_username(kade_account: &signer, claimer_address: address, username: String) acquires State {
+        assert!(signer::address_of(kade_account) == @kade, EOperationNotPermitted);
+        let resource_address = account::create_resource_address(&@kade, SEED);
+        let state = borrow_global_mut<State>(resource_address);
+        assert_username_unclaimed(username, &state.claimed_usernames);
+        simple_map::add(&mut state.claimed_usernames, claimer_address, username);
+
+        simple_map::add(&mut state.friend_map, claimer_address, Friends{
+            count: 0,
+            friends: vector::empty(),
+        });
+
+        event::emit_event(&mut state.claim_username_event, ClaimUsernameEvent{
+            username,
+            owner: claimer_address,
+            timestamp_seconds: timestamp::now_seconds(),
+        });
+    }
+
+
+    public entry fun free_claim_username_reffered(kade_account: &signer, claimer_address: address, username: String, referrer: address) acquires State {
+        assert!(signer::address_of(kade_account) == @kade, EOperationNotPermitted);
+        let resource_address = account::create_resource_address(&@kade, SEED);
+        let state = borrow_global_mut<State>(resource_address);
+        assert_username_unclaimed(username, &state.claimed_usernames);
+        simple_map::add(&mut state.claimed_usernames, claimer_address, username);
+
+        simple_map::add(&mut state.friend_map, claimer_address, Friends{
+            count: 0,
+            friends: vector::empty(),
+        });
+
+            assert!(simple_map::contains_key(&state.claimed_usernames, &referrer), EAddressDoesNotExist);
+            let friends = simple_map::borrow_mut(&mut state.friend_map, &referrer);
+
+            friends.count = friends.count + 1;
+            vector::push_back(&mut friends.friends, claimer_address);
+
+            event::emit_event(&mut state.referral_event, ReffaralEvent{
+                referrer,
+                referee: claimer_address,
+                timestamp_seconds: timestamp::now_seconds(),
+            });
+
+
+
+
+        event::emit_event(&mut state.claim_username_event, ClaimUsernameEvent{
+            username,
+            owner: claimer_address,
             timestamp_seconds: timestamp::now_seconds(),
         });
     }
@@ -189,12 +308,69 @@ module kade::OGProfilesNftTest4 {
 
     }
 
-    inline fun assert_username_unclaimed(username: String) acquires State {
+    // let kade cover the gas cost of minting a profile nft
+    public entry fun free_mint_profile_nft(kade_account: &signer, claimer_address: address, variant: u64) acquires State {
+        assert!(signer::address_of(kade_account) == @kade, EOperationNotPermitted);
         let resource_address = account::create_resource_address(&@kade, SEED);
-        let state = borrow_global<State>(resource_address);
+        let state = borrow_global_mut<State>(resource_address);
+        let resource_signer = account::create_signer_with_capability(&state.signer_capability);
+        let username = *simple_map::borrow(&state.claimed_usernames, &claimer_address);
+        let count = string_utils::to_string(&state.minted_profiles);
+        state.minted_profiles = state.minted_profiles + 1;
+        let profile_nft_uri = string::utf8(b"");
 
-        let values = simple_map::values(&state.claimed_usernames);
+        if(variant == 1) {
+            profile_nft_uri = string::utf8(EXPLORER_1_URI);
+        } else if(variant == 2) {
+            profile_nft_uri = string::utf8(EXPLORER_2_URI);
+        } else if(variant == 3) {
+            profile_nft_uri = string::utf8(PIOONER_1_URI);
+        } else if(variant == 4) {
+            profile_nft_uri = string::utf8(PIOONER_2_URI);
+        };
+
+        let profile_name = string_utils::format2(&b"Profile #{} : {}",count, username);
+
+        let nft = token::create_named_token(
+            &resource_signer,
+            string::utf8(COLLECTION_NAME),
+            string::utf8(b"PROFILE MINT"),
+            profile_name,
+            option::none(),
+            profile_nft_uri,
+        );
+
+        let nft_address = object::address_from_constructor_ref(&nft);
+        let nft_signer = object::generate_signer(&nft);
+
+        simple_map::add(&mut state.minted_nfts, claimer_address, nft_address);
+
+        object::transfer_raw(&resource_signer, nft_address, claimer_address);
+
+        let profile = Profile {
+            name:  profile_name,
+            variant,
+            uri: profile_nft_uri,
+        };
+
+        move_to<Profile>(&nft_signer, profile);
+
+        emit_event(&mut state.profile_mint_event, ProfileMintEvent{
+            timestamp_seconds: timestamp::now_seconds(),
+            owner: claimer_address,
+            profile_address: nft_address,
+        });
+
+    }
+
+    inline fun assert_username_unclaimed(username: String, claimed: &SimpleMap<address,String>) {
+
+        let values = simple_map::values(claimed);
         assert!(!vector::contains(&values, &username), EUserNameExists);
+    }
+
+    inline fun assert_user_does_not_have_profile_nft(claimer_address: address, minted_nfts: &SimpleMap<address, address>) {
+        assert!(!simple_map::contains_key(minted_nfts, &claimer_address), EOperationNotPermitted);
     }
 
 
@@ -477,6 +653,169 @@ module kade::OGProfilesNftTest4 {
         assert!(profile_name == expected_profile_name, 7);
         assert!(variant == 1, 8);
         assert!(uri == string::utf8(EXPLORER_1_URI), 9);
+    }
+
+    // test claim username can be done by kade on behalf of a user
+    #[test(admin = @kade, user = @0xCED, aptos_framework = @aptos_framework)]
+    fun test_free_claim_username_success(admin: &signer, user: &signer, aptos_framework: &signer) acquires State {
+        let admin_address = signer::address_of(admin);
+        let user_address = signer::address_of(user);
+        let aptos_framework_address = signer::address_of(aptos_framework);
+        let resource_address = account::create_resource_address(&@kade, SEED);
+
+        let aptos =account::create_account_for_test(aptos_framework_address);
+        timestamp::set_time_has_started_for_testing(&aptos);
+        account::create_account_for_test(admin_address);
+        account::create_account_for_test(user_address);
+
+        init_module(admin);
+
+        let username_to_claim = string::utf8(b"kade");
+
+        free_claim_username(admin, user_address, username_to_claim);
+
+        let state = borrow_global<State>(resource_address);
+
+        let claim_events_count = event::counter(&state.claim_username_event);
+
+        assert!(claim_events_count == 1, 7);
+
+        assert!(simple_map::contains_key(&state.claimed_usernames, &user_address), 8);
+
+        assert!(simple_map::borrow(&state.claimed_usernames, &user_address) == &username_to_claim, 9);
+    }
+
+
+    // test mint profile nft can be done by kade on behalf of a user
+    #[test(admin = @kade, user = @0xCED, aptos_framework = @aptos_framework)]
+    fun test_free_mint_profile_nft_success(admin: &signer, user: &signer, aptos_framework: &signer) acquires State, Profile {
+        let admin_address = signer::address_of(admin);
+        let user_address = signer::address_of(user);
+        let aptos_framework_address = signer::address_of(aptos_framework);
+        let resource_address = account::create_resource_address(&@kade, SEED);
+
+        let aptos =account::create_account_for_test(aptos_framework_address);
+        timestamp::set_time_has_started_for_testing(&aptos);
+        account::create_account_for_test(admin_address);
+        account::create_account_for_test(user_address);
+
+        init_module(admin);
+
+        let username_to_claim = string::utf8(b"kade");
+
+        free_claim_username(admin, user_address, username_to_claim);
+
+        free_mint_profile_nft(admin, user_address, 1);
+
+        let state = borrow_global<State>(resource_address);
+
+        let mint_events_count = event::counter(&state.profile_mint_event);
+
+        assert!(mint_events_count == 1, 7);
+
+        assert!(simple_map::contains_key(&state.minted_nfts, &user_address), 8);
+
+        let nft_address = *simple_map::borrow(&state.minted_nfts, &user_address);
+
+        assert!(exists<Profile>(nft_address), 9);
+
+        let profile = borrow_global<Profile>(nft_address);
+        let expected_profile_name = string_utils::format2(&b"Profile #{} : {}",string_utils::to_string(&0), username_to_claim);
+        debug::print<String>(&expected_profile_name);
+        debug::print<Profile>(profile);
+
+        assert!(profile.name == expected_profile_name, 10);
+    }
+
+
+    // test claim username reffered
+    #[test(admin = @kade, user = @0xCED, user2 = @0xCEE, aptos_framework = @aptos_framework)]
+    fun test_claim_username_reffered_success(admin: &signer, user: &signer, user2: &signer, aptos_framework: &signer) acquires State {
+        let admin_address = signer::address_of(admin);
+        let user_address = signer::address_of(user);
+        let user2_address = signer::address_of(user2);
+        let aptos_framework_address = signer::address_of(aptos_framework);
+        let resource_address = account::create_resource_address(&@kade, SEED);
+
+        let aptos =account::create_account_for_test(aptos_framework_address);
+        timestamp::set_time_has_started_for_testing(&aptos);
+        account::create_account_for_test(admin_address);
+        account::create_account_for_test(user_address);
+        account::create_account_for_test(user2_address);
+
+        init_module(admin);
+
+        let username_to_claim = string::utf8(b"kade");
+        let second_username_to_claim = string::utf8(b"not kade");
+        claim_username(user, username_to_claim);
+
+        claim_username_reffered(user2, second_username_to_claim, user_address);
+
+        let state = borrow_global<State>(resource_address);
+
+        let claim_events_count = event::counter(&state.claim_username_event);
+
+        assert!(claim_events_count == 2, 7);
+
+        assert!(simple_map::contains_key(&state.claimed_usernames, &user2_address), 8);
+
+        assert!(simple_map::borrow(&state.claimed_usernames, &user2_address) == &second_username_to_claim, 9);
+
+        assert!(simple_map::contains_key(&state.friend_map, &user_address), 10);
+
+        let friends = simple_map::borrow(&state.friend_map, &user_address);
+
+        assert!(friends.count == 1, 11);
+
+        assert!(vector::length(&friends.friends) == 1, 12);
+
+        assert!(*vector::borrow(&friends.friends, 0) == user2_address, 13);
+
+    }
+
+    // test free claim username reffered success
+    #[test(admin = @kade, user = @0xCED, user2 = @0xCEE, aptos_framework = @aptos_framework)]
+    fun test_free_claim_username_reffered_success(admin: &signer, user: &signer, user2: &signer, aptos_framework: &signer) acquires State {
+        let admin_address = signer::address_of(admin);
+        let user_address = signer::address_of(user);
+        let user2_address = signer::address_of(user2);
+        let aptos_framework_address = signer::address_of(aptos_framework);
+        let resource_address = account::create_resource_address(&@kade, SEED);
+
+        let aptos =account::create_account_for_test(aptos_framework_address);
+        timestamp::set_time_has_started_for_testing(&aptos);
+        account::create_account_for_test(admin_address);
+        account::create_account_for_test(user_address);
+        account::create_account_for_test(user2_address);
+
+        init_module(admin);
+
+        let username_to_claim = string::utf8(b"kade");
+        let second_username_to_claim = string::utf8(b"not kade");
+        claim_username(user, username_to_claim);
+
+        free_claim_username_reffered(admin, user2_address, second_username_to_claim, user_address);
+
+        let state = borrow_global<State>(resource_address);
+
+        let claim_events_count = event::counter(&state.claim_username_event);
+
+        assert!(claim_events_count == 2, 7);
+
+        assert!(simple_map::contains_key(&state.claimed_usernames, &user2_address), 8);
+
+        assert!(simple_map::borrow(&state.claimed_usernames, &user2_address) == &second_username_to_claim, 9);
+
+        assert!(simple_map::contains_key(&state.friend_map, &user_address), 10);
+
+        let friends = simple_map::borrow(&state.friend_map, &user_address);
+
+        assert!(friends.count == 1, 11);
+
+        assert!(vector::length(&friends.friends) == 1, 12);
+
+        assert!(*vector::borrow(&friends.friends, 0) == user2_address, 13);
+
     }
 
 }
