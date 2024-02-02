@@ -5,7 +5,7 @@
 **/
 
 
-module kade::OGProfilesNftTest4 {
+module kade::OGProfilesNFTv1 {
 
     use std::option;
     use std::signer;
@@ -30,9 +30,9 @@ module kade::OGProfilesNftTest4 {
     // use aptos_token_objects::token::royalty;
 
     // NFT Constants
-    const COLLECTION_NAME: vector<u8> = b"OG Profiles Collection";
-    const COLLECTION_DESCRIPTION: vector<u8> = b"Collection of Kade/Network's OG Profiles";
-    const COLLECTION_URI: vector<u8> = b"collection URI";
+    const COLLECTION_NAME: vector<u8> = b"Kade OG Profiles Collection";
+    const COLLECTION_DESCRIPTION: vector<u8> = b"Collection of Kade's OG Profiles";
+    const COLLECTION_URI: vector<u8> = b"https://kade.network";
 
     const EXPLORER_1_URI: vector<u8> = b"https://orange-urban-sloth-806.mypinata.cloud/ipfs/QmWcy4azPJ5KZEtpGeMBu3eCn3XxVeukD6Nos9EcZqyWRb?_gl=1*1m4yyd2*_ga*OTAyMjc0MDk2LjE3MDM1Nzk3MDE.*_ga_5RMPXG14TE*MTcwNTI5NDI1MS41LjEuMTcwNTI5NDI4MS4zMC4wLjA.";
     const EXPLORER_2_URI: vector<u8> = b"https://orange-urban-sloth-806.mypinata.cloud/ipfs/QmUYL6gALaNAFj3RpnfXvSHphJnagmFFEwTFCy8cRw9pgd?_gl=1*f334fl*_ga*OTAyMjc0MDk2LjE3MDM1Nzk3MDE.*_ga_5RMPXG14TE*MTcwNTI5NDI1MS41LjEuMTcwNTI5NDI4MS4zMC4wLjA.";
@@ -40,7 +40,7 @@ module kade::OGProfilesNftTest4 {
     const PIOONER_2_URI: vector<u8> = b"https://orange-urban-sloth-806.mypinata.cloud/ipfs/Qmaw8phxUiCeEUkhDBTztxDtV9TXwzYEdNiRY7oiBjodVV?_gl=1*mv0e7f*_ga*OTAyMjc0MDk2LjE3MDM1Nzk3MDE.*_ga_5RMPXG14TE*MTcwNTI5NDI1MS41LjEuMTcwNTI5NDI4MS4zMC4wLjA.";
 
     // seed for the module's resource account
-    const SEED: vector<u8> = b"og profiles ::test-4";
+    const SEED: vector<u8> = b"kade og profiles v1";
 
     // Error codes
     const EUserNameExists: u64 = 1;
@@ -160,6 +160,7 @@ module kade::OGProfilesNftTest4 {
         username: String,
         referrer:address,
     ) acquires State {
+        assert!(signer::address_of(claimer) != referrer, EOperationNotPermitted);
         let resource_address = account::create_resource_address(&@kade, SEED);
 
 
@@ -220,6 +221,7 @@ module kade::OGProfilesNftTest4 {
 
     public entry fun free_claim_username_reffered(kade_account: &signer, claimer_address: address, username: String, referrer: address) acquires State {
         assert!(signer::address_of(kade_account) == @kade, EOperationNotPermitted);
+        assert!(claimer_address != referrer, EOperationNotPermitted);
         let resource_address = account::create_resource_address(&@kade, SEED);
         let state = borrow_global_mut<State>(resource_address);
         assert_username_unclaimed(username, &state.claimed_usernames);
@@ -254,6 +256,7 @@ module kade::OGProfilesNftTest4 {
 
     // user who has already claimed a username can claim a profile nft
     public entry fun mint_profile_nft(claimer: &signer, variant: u64) acquires State {
+        assert!(!has_profile_nft(signer::address_of(claimer)), EOperationNotPermitted);
         let resource_address = account::create_resource_address(&@kade, SEED);
         let state = borrow_global_mut<State>(resource_address);
         let resource_signer = account::create_signer_with_capability(&state.signer_capability);
@@ -311,6 +314,7 @@ module kade::OGProfilesNftTest4 {
     // let kade cover the gas cost of minting a profile nft
     public entry fun free_mint_profile_nft(kade_account: &signer, claimer_address: address, variant: u64) acquires State {
         assert!(signer::address_of(kade_account) == @kade, EOperationNotPermitted);
+        assert!(!has_profile_nft(claimer_address), EOperationNotPermitted);
         let resource_address = account::create_resource_address(&@kade, SEED);
         let state = borrow_global_mut<State>(resource_address);
         let resource_signer = account::create_signer_with_capability(&state.signer_capability);
@@ -330,11 +334,16 @@ module kade::OGProfilesNftTest4 {
         };
 
         let profile_name = string_utils::format2(&b"Profile #{} : {}",count, username);
+        let description = string::utf8(b"KADE PIONEER");
+        if(variant < 3) {
+            description = string::utf8(b"KADE EXPLORER");
+        };
+
 
         let nft = token::create_named_token(
             &resource_signer,
             string::utf8(COLLECTION_NAME),
-            string::utf8(b"PROFILE MINT"),
+            description,
             profile_name,
             option::none(),
             profile_nft_uri,
@@ -816,6 +825,42 @@ module kade::OGProfilesNftTest4 {
 
         assert!(*vector::borrow(&friends.friends, 0) == user2_address, 13);
 
+    }
+
+    // test same user cannot refer themselves
+    #[test(admin = @kade, user = @0xCED, aptos_framework = @aptos_framework)]
+    #[expected_failure(abort_code = EOperationNotPermitted, location = Self)]
+    fun test_claim_username_reffered_fails_if_same_user(admin: &signer, user: &signer, aptos_framework: &signer) acquires State {
+        let admin_address = signer::address_of(admin);
+        let user_address = signer::address_of(user);
+        let aptos_framework_address = signer::address_of(aptos_framework);
+
+        let aptos =account::create_account_for_test(aptos_framework_address);
+        timestamp::set_time_has_started_for_testing(&aptos);
+        account::create_account_for_test(admin_address);
+        account::create_account_for_test(user_address);
+
+        init_module(admin);
+
+        claim_username_reffered(user, string::utf8(b"kade"), user_address);
+    }
+
+    // test free same user cannot refer themselves
+    #[test(admin = @kade, user = @0xCED, aptos_framework = @aptos_framework)]
+    #[expected_failure(abort_code = EOperationNotPermitted, location = Self)]
+    fun test_free_claim_username_reffered_fails_if_same_user(admin: &signer, user: &signer, aptos_framework: &signer) acquires State {
+        let admin_address = signer::address_of(admin);
+        let user_address = signer::address_of(user);
+        let aptos_framework_address = signer::address_of(aptos_framework);
+
+        let aptos =account::create_account_for_test(aptos_framework_address);
+        timestamp::set_time_has_started_for_testing(&aptos);
+        account::create_account_for_test(admin_address);
+        account::create_account_for_test(user_address);
+
+        init_module(admin);
+
+        free_claim_username_reffered(admin, user_address, string::utf8(b"kade"), user_address);
     }
 
 }

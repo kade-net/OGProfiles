@@ -1,6 +1,6 @@
 [package]
-name = "og-profiles-nft-test4"
-version = "0.0.1"
+name = "og-profiles-nftv1"
+version = "1.0.0"
 authors = []
 
 [addresses]
