@@ -14,6 +14,7 @@ module kade::OGProfilesNFTv1 {
     use std::vector;
     use aptos_std::simple_map;
     use aptos_std::simple_map::SimpleMap;
+    use aptos_std::smart_table::{Self, SmartTable};
     use aptos_std::string_utils;
     use aptos_framework::account;
     use aptos_framework::account::{SignerCapability};
@@ -71,6 +72,13 @@ module kade::OGProfilesNFTv1 {
         profile_mint_event: EventHandle<ProfileMintEvent>,
         referral_event: EventHandle<ReffaralEvent>,
         friend_map: SimpleMap<address, Friends>,
+    }
+
+    struct PatchState has key {
+        claimed_usernames: SmartTable<string::String, address>,
+        minted_nfts: SmartTable<address, address>,
+        friend_map: SmartTable<address, Friends>,
+        existing_accounts: vector<address>
     }
 
     struct ReffaralEvent has store, drop {
@@ -372,6 +380,154 @@ module kade::OGProfilesNFTv1 {
 
     }
 
+    public entry fun patch_init_module(admin: &signer) acquires State {
+        assert!(signer::address_of(admin) == @kade, EOperationNotPermitted);
+        let resource_address = account::create_resource_address(&@kade, SEED);
+
+        let existingState = borrow_global<State>(resource_address);
+        let signer  = account::create_signer_with_capability(&existingState.signer_capability);
+
+        let state = PatchState {
+            claimed_usernames: smart_table::new(),
+            minted_nfts: smart_table::new(),
+            friend_map: smart_table::new(),
+            existing_accounts: vector::empty(),
+        };
+
+        move_to(&signer, state);
+    }
+
+    public entry fun patch_claim_username(claimer: &signer, username: String) acquires PatchState, State {
+        let resource_address = account::create_resource_address(&@kade, SEED);
+        let patchState = borrow_global_mut<PatchState>(resource_address);
+        let existingState = borrow_global_mut<State>(resource_address);
+
+        assert_username_unclaimed(username, &existingState.claimed_usernames);
+        patch_assert_username_unclaimed(username, &patchState.claimed_usernames);
+
+        assert!(!vector::contains(&patchState.existing_accounts, &signer::address_of(claimer)), EOperationNotPermitted);
+
+
+        smart_table::add(&mut patchState.claimed_usernames, username, signer::address_of(claimer));
+        smart_table::add(&mut patchState.friend_map, signer::address_of(claimer), Friends{
+            count: 0,
+            friends: vector::empty(),
+        });
+
+        vector::push_back(&mut patchState.existing_accounts, signer::address_of(claimer));
+
+        event::emit_event(&mut existingState.claim_username_event, ClaimUsernameEvent {
+            username,
+            owner: signer::address_of(claimer),
+            timestamp_seconds: timestamp::now_seconds(),
+        });
+    }
+
+    public entry  fun patch_claim_username_reffered(claimer: &signer, username: String, refferer: address, ) acquires PatchState, State {
+        let resource_address = account::create_resource_address(&@kade, SEED);
+        let patchState = borrow_global_mut<PatchState>(resource_address);
+        let existingState = borrow_global_mut<State>(resource_address);
+
+        assert_username_unclaimed(username, &existingState.claimed_usernames);
+        patch_assert_username_unclaimed(username, &patchState.claimed_usernames);
+
+        assert!(!vector::contains(&patchState.existing_accounts, &signer::address_of(claimer)), EOperationNotPermitted);
+        assert!(vector::contains(&patchState.existing_accounts, &refferer), EOperationNotPermitted);
+
+        smart_table::add(&mut patchState.claimed_usernames, username, signer::address_of(claimer));
+        smart_table::add(&mut patchState.friend_map, signer::address_of(claimer), Friends{
+            count: 0,
+            friends: vector::empty(),
+        });
+        vector::push_back(&mut patchState.existing_accounts, signer::address_of(claimer));
+
+        assert!(smart_table::contains(&patchState.claimed_usernames, username), EAddressDoesNotExist);
+        let friends = smart_table::borrow_mut(&mut patchState.friend_map, refferer);
+
+        friends.count = friends.count + 1;
+        vector::push_back(&mut friends.friends, signer::address_of(claimer));
+
+        event::emit_event(&mut existingState.referral_event, ReffaralEvent{
+            referrer: refferer,
+            referee: signer::address_of(claimer),
+            timestamp_seconds: timestamp::now_seconds(),
+        });
+
+        event::emit_event(&mut existingState.claim_username_event, ClaimUsernameEvent {
+            username,
+            owner: signer::address_of(claimer),
+            timestamp_seconds: timestamp::now_seconds(),
+        });
+    }
+    public entry fun patch_mint_profile_nft(claimer: &signer, claimerUsername: String, variant: u64) acquires PatchState, State {
+        assert!(!patch_has_profile_nft(signer::address_of(claimer)), EOperationNotPermitted);
+        let resource_address = account::create_resource_address(&@kade, SEED);
+
+        let state = borrow_global_mut<State>(resource_address);
+        let patchState = borrow_global_mut<PatchState>(resource_address);
+
+        assert!(vector::contains(&patchState.existing_accounts, &signer::address_of(claimer)), EOperationNotPermitted);
+        assert!(smart_table::contains(&patchState.claimed_usernames, claimerUsername), EAddressDoesNotExist);
+
+        let storedAddress = *smart_table::borrow(&patchState.claimed_usernames, claimerUsername);
+        assert!(storedAddress == signer::address_of(claimer), EOperationNotPermitted);
+
+        let resource_signer = account::create_signer_with_capability(&state.signer_capability);
+        let username = claimerUsername;
+        let count = string_utils::to_string(&state.minted_profiles);
+        state.minted_profiles = state.minted_profiles + 1;
+        let profile_nft_uri = string::utf8(b"");
+
+        if(variant == 1) {
+            profile_nft_uri = string::utf8(EXPLORER_1_URI);
+        } else if(variant == 2) {
+            profile_nft_uri = string::utf8(EXPLORER_2_URI);
+        } else if(variant == 3) {
+            profile_nft_uri = string::utf8(PIOONER_1_URI);
+        } else if(variant == 4) {
+            profile_nft_uri = string::utf8(PIOONER_2_URI);
+        };
+
+        let profile_name = string_utils::format2(&b"Profile #{} : {}",count, username);
+
+        let nft = token::create_named_token(
+            &resource_signer,
+            string::utf8(COLLECTION_NAME),
+            string::utf8(b"PROFILE MINT"),
+            profile_name,
+            option::none(),
+            profile_nft_uri,
+        );
+
+
+
+        let nft_address = object::address_from_constructor_ref(&nft);
+        let nft_signer = object::generate_signer(&nft);
+
+        smart_table::add(&mut patchState.minted_nfts, signer::address_of(claimer), nft_address);
+
+        object::transfer_raw(&resource_signer, nft_address, signer::address_of(claimer));
+
+        let profile = Profile {
+            name:  profile_name,
+            variant,
+            uri: profile_nft_uri,
+        };
+
+        move_to<Profile>(&nft_signer, profile);
+
+        emit_event(&mut state.profile_mint_event, ProfileMintEvent{
+            timestamp_seconds: timestamp::now_seconds(),
+            owner: signer::address_of(claimer),
+            profile_address: nft_address,
+        });
+    }
+
+    inline fun patch_assert_username_unclaimed(username: String, claimed: &SmartTable<String, address>)  {
+        let has_been_claimed = smart_table::contains(claimed, username);
+        assert!(!has_been_claimed, EUserNameExists);
+    }
+
     inline fun assert_username_unclaimed(username: String, claimed: &SimpleMap<address,String>) {
 
         let values = simple_map::values(claimed);
@@ -404,6 +560,35 @@ module kade::OGProfilesNFTv1 {
         *username
     }
 
+    #[view]
+    public fun patch_get_claimed_username(claimer_address: address): string::String acquires  State, PatchState {
+        let resource_address = account::create_resource_address(&@kade, SEED);
+        let state = borrow_global<State>(resource_address);
+        let patchState = borrow_global<PatchState>(resource_address);
+        // check if address exists
+
+        let claimer_username = string::utf8(b"");
+
+        let exists = smart_table::any(&patchState.claimed_usernames, |_username, _address| {
+            let username: &string::String = _username;
+            let address: &address = _address;
+            if(*address == claimer_address){
+                claimer_username = *username;
+                true
+            }else{
+                false
+            }
+        });
+
+        if(exists) {
+            return claimer_username
+        };
+
+        let username = simple_map::borrow(&state.claimed_usernames, &claimer_address);
+
+        *username
+    }
+
     // Check if a username has already been claimed
     #[view]
     public fun is_username_claimed(username: String): bool acquires  State {
@@ -413,17 +598,55 @@ module kade::OGProfilesNFTv1 {
         vector::contains(&values, &username)
     }
 
+    #[view]
+    public fun patch_is_username_claimed(username: String): bool acquires PatchState, State {
+        let resource_address = account::create_resource_address(&@kade, SEED);
+        let patchState = borrow_global<PatchState>(resource_address);
+        let existingState = borrow_global<State>(resource_address);
+
+        let values = simple_map::values(&existingState.claimed_usernames);
+
+        if(vector::contains(&values, &username)){
+            return true
+        };
+
+        smart_table::contains(&patchState.claimed_usernames, username)
+    }
+
     // Check if a user already has a profile nft
     #[view]
     public fun has_profile_nft(claimer_address: address): bool acquires  State {
         let resource_address = account::create_resource_address(&@kade, SEED);
         let state = borrow_global<State>(resource_address);
+
         // check if address exists
         if(!simple_map::contains_key(&state.minted_nfts, &claimer_address)){
             return false
         };
+
         let nft_address = *simple_map::borrow(&state.minted_nfts, &claimer_address);
         exists<Profile>(nft_address)
+    }
+
+    #[view]
+    public fun patch_has_profile_nft(claimer_address: address): bool acquires  State, PatchState {
+        let resource_address = account::create_resource_address(&@kade, SEED);
+        let state = borrow_global<State>(resource_address);
+        let patchState = borrow_global<PatchState>(resource_address);
+        if(!smart_table::contains(&patchState.minted_nfts, claimer_address)){
+            return false
+        }else if(!simple_map::contains_key(&state.minted_nfts, &claimer_address)){
+            return false
+        }else if(smart_table::contains(&patchState.minted_nfts, claimer_address)){
+            let nft_address = *smart_table::borrow(&patchState.minted_nfts, claimer_address);
+            let e = exists<Profile>(nft_address);
+            return e
+        }else if(simple_map::contains_key(&state.minted_nfts, &claimer_address)){
+            let nft_address = *simple_map::borrow(&state.minted_nfts, &claimer_address);
+            exists<Profile>(nft_address)
+        } else {
+            return false
+        }
     }
 
     // Get the user's profile nft
@@ -438,6 +661,25 @@ module kade::OGProfilesNFTv1 {
         (profile.name, profile.variant, profile.uri)
     }
 
+    #[view]
+    public fun patch_get_profile_nft(claimer_address: address): (String, u64, String) acquires Profile, State, PatchState {
+        let resource_address = account::create_resource_address(&@kade, SEED);
+        let state = borrow_global<State>(resource_address);
+        let patchState = borrow_global<PatchState>(resource_address);
+        // check if address exists
+        if(smart_table::contains(&patchState.minted_nfts, claimer_address)){
+            let nft_address = *smart_table::borrow(&patchState.minted_nfts, claimer_address);
+            let profile = borrow_global<Profile>(nft_address);
+            return (profile.name, profile.variant, profile.uri)
+        };
+        if(simple_map::contains_key(&state.minted_nfts, &claimer_address)){
+            let nft_address = *simple_map::borrow(&state.minted_nfts, &claimer_address);
+            let profile = borrow_global<Profile>(nft_address);
+            return (profile.name, profile.variant, profile.uri)
+        };
+        (string::utf8(b""), 0, string::utf8(b""))
+    }
+
     // Check if a user already exists
     #[view]
     public fun user_exists(claimer_address: address): bool acquires  State {
@@ -445,6 +687,18 @@ module kade::OGProfilesNFTv1 {
         let state = borrow_global<State>(resource_address);
         // check if address exists
         simple_map::contains_key(&state.claimed_usernames, &claimer_address)
+    }
+
+    #[view]
+    public fun patch_user_exists(claimer_address: address): bool acquires  PatchState, State {
+        let resource_address = account::create_resource_address(&@kade, SEED);
+        let patchState = borrow_global<PatchState>(resource_address);
+        let existingState = borrow_global<State>(resource_address);
+        // check if address exists
+        if(vector::contains(&patchState.existing_accounts, &claimer_address)){
+            return true
+        };
+        simple_map::contains_key(&existingState.claimed_usernames, &claimer_address)
     }
 
 
@@ -862,5 +1116,381 @@ module kade::OGProfilesNFTv1 {
 
         free_claim_username_reffered(admin, user_address, string::utf8(b"kade"), user_address);
     }
+
+
+    // ===
+    // Patch tests
+    // ===
+
+    // test patch init module success
+    #[test(admin = @kade)]
+    fun test_patch_init_module_success(admin: &signer) acquires State {
+        let admin_address = signer::address_of(admin);
+        account::create_account_for_test(admin_address);
+
+        init_module(admin);
+        patch_init_module(admin);
+
+        let expected_resource_account_address = account::create_resource_address(&admin_address, SEED);
+
+        assert!(coin::is_account_registered<AptosCoin>(expected_resource_account_address), 4);
+
+        assert!(exists<PatchState>(expected_resource_account_address), 0);
+
+        let state = borrow_global<State>(expected_resource_account_address);
+        let claim_username_events = event::counter(&state.claim_username_event);
+
+        assert!(claim_username_events == 0, 5);
+        assert!(simple_map::length(&state.claimed_usernames) == 0, 6);
+
+        assert!(account::get_signer_capability_address(&state.signer_capability) == expected_resource_account_address, 7);
+    }
+
+    // test patch claim username success
+    #[test(admin = @kade, user = @0xCED, aptos_framework = @aptos_framework)]
+    fun test_patch_claim_username_success(admin: &signer, user: &signer, aptos_framework: &signer) acquires PatchState, State {
+        let admin_address = signer::address_of(admin);
+        let user_address = signer::address_of(user);
+        let aptos_framework_address = signer::address_of(aptos_framework);
+        let resource_address = account::create_resource_address(&@kade, SEED);
+
+        let aptos =account::create_account_for_test(aptos_framework_address);
+        timestamp::set_time_has_started_for_testing(&aptos);
+        account::create_account_for_test(admin_address);
+        account::create_account_for_test(user_address);
+
+        init_module(admin);
+        patch_init_module(admin);
+
+        let username_to_claim = string::utf8(b"kade");
+
+        patch_claim_username(user, username_to_claim);
+
+        let state = borrow_global<State>(resource_address);
+        let patchState = borrow_global<PatchState>(resource_address);
+
+        assert!(*smart_table::borrow(&patchState.claimed_usernames, username_to_claim) == user_address, 7);
+
+        assert!(vector::length(&patchState.existing_accounts) == 1, 8);
+
+        let claim_events_count = event::counter(&state.claim_username_event);
+
+        assert!(claim_events_count == 1, 9);
+
+
+
+    }
+
+    // test patch claim username reffered success
+
+    #[test(admin = @kade, user = @0xCED, user2 = @0xCEE, aptos_framework = @aptos_framework)]
+    fun test_patch_claim_username_reffered_success(admin: &signer, user: &signer, user2: &signer, aptos_framework: &signer) acquires PatchState, State {
+        let admin_address = signer::address_of(admin);
+        let user_address = signer::address_of(user);
+        let user2_address = signer::address_of(user2);
+        let aptos_framework_address = signer::address_of(aptos_framework);
+        let resource_address = account::create_resource_address(&@kade, SEED);
+
+        let aptos =account::create_account_for_test(aptos_framework_address);
+        timestamp::set_time_has_started_for_testing(&aptos);
+        account::create_account_for_test(admin_address);
+        account::create_account_for_test(user_address);
+        account::create_account_for_test(user2_address);
+
+        init_module(admin);
+        patch_init_module(admin);
+
+        let username_to_claim = string::utf8(b"kade");
+        let second_username_to_claim = string::utf8(b"not kade");
+        patch_claim_username(user, username_to_claim);
+
+        patch_claim_username_reffered(user2, second_username_to_claim, user_address);
+
+        let state = borrow_global<State>(resource_address);
+        let patchState = borrow_global<PatchState>(resource_address);
+
+        let claim_events_count = event::counter(&state.claim_username_event);
+
+        assert!(claim_events_count == 2, 7);
+
+        assert!(smart_table::contains(&patchState.claimed_usernames, second_username_to_claim), 8);
+
+        assert!(smart_table::contains(&patchState.friend_map, user_address), 9);
+
+        let friends = smart_table::borrow(&patchState.friend_map, user_address);
+
+        assert!(friends.count == 1, 10);
+
+    }
+
+    // test patch mint profile nft success
+    #[test(admin = @kade, user = @0xCED, aptos_framework = @aptos_framework)]
+    fun test_patch_mint_profile_nft_success(admin: &signer, user: &signer, aptos_framework: &signer) acquires PatchState, State, Profile {
+        let admin_address = signer::address_of(admin);
+        let user_address = signer::address_of(user);
+        let aptos_framework_address = signer::address_of(aptos_framework);
+        let resource_address = account::create_resource_address(&@kade, SEED);
+
+        let aptos =account::create_account_for_test(aptos_framework_address);
+        timestamp::set_time_has_started_for_testing(&aptos);
+        account::create_account_for_test(admin_address);
+        account::create_account_for_test(user_address);
+
+        init_module(admin);
+        patch_init_module(admin);
+
+        let username_to_claim = string::utf8(b"kade");
+
+        patch_claim_username(user, username_to_claim);
+
+        patch_mint_profile_nft(user, username_to_claim, 1);
+
+        let state = borrow_global<State>(resource_address);
+        let patchState = borrow_global<PatchState>(resource_address);
+
+        let mint_events_count = event::counter(&state.profile_mint_event);
+
+        assert!(mint_events_count == 1, 7);
+
+        assert!(smart_table::contains(&patchState.minted_nfts, user_address), 8);
+
+        let nft_address = *smart_table::borrow(&patchState.minted_nfts, user_address);
+
+        assert!(exists<Profile>(nft_address), 9);
+
+        let profile = borrow_global<Profile>(nft_address);
+        let expected_profile_name = string_utils::format2(&b"Profile #{} : {}",string_utils::to_string(&0), username_to_claim);
+        debug::print<String>(&expected_profile_name);
+        debug::print<Profile>(profile);
+
+        assert!(profile.name == expected_profile_name, 10);
+    }
+
+    // test old mint and patch mint can work together
+    #[test(admin = @kade, user = @0xCED, user2 = @0x54, aptos_framework = @aptos_framework)]
+    fun test_old_mint_and_patch_mint_can_work_together(admin: &signer, user: &signer, user2: &signer, aptos_framework: &signer) acquires PatchState, State, Profile {
+        let admin_address = signer::address_of(admin);
+        let user_address = signer::address_of(user);
+        let user2_address = signer::address_of(user2);
+        let aptos_framework_address = signer::address_of(aptos_framework);
+        let resource_address = account::create_resource_address(&@kade, SEED);
+
+        let aptos = account::create_account_for_test(aptos_framework_address);
+        timestamp::set_time_has_started_for_testing(&aptos);
+        account::create_account_for_test(admin_address);
+        account::create_account_for_test(user_address);
+        account::create_account_for_test(user2_address);
+
+        init_module(admin);
+        patch_init_module(admin);
+
+        let username_to_claim = string::utf8(b"kade");
+        let second_username_to_claim = string::utf8(b"not kade");
+        claim_username(user, username_to_claim);
+        patch_claim_username(user2, second_username_to_claim);
+
+        mint_profile_nft(user, 1);
+        patch_mint_profile_nft(user2, second_username_to_claim, 1);
+
+        let state = borrow_global<State>(resource_address);
+        let patchState = borrow_global<PatchState>(resource_address);
+
+        let mint_events_count = event::counter(&state.profile_mint_event);
+
+        assert!(mint_events_count == 2, 7);
+
+        assert!(simple_map::contains_key(&state.minted_nfts, &user_address), 8);
+        assert!(smart_table::contains(&patchState.minted_nfts, user2_address), 9);
+
+        let nft_address = *simple_map::borrow(&state.minted_nfts, &user_address);
+        let nft_address2 = *smart_table::borrow(&patchState.minted_nfts, user2_address);
+
+        assert!(exists<Profile>(nft_address), 10);
+        assert!(exists<Profile>(nft_address2), 11);
+
+        let profile = borrow_global<Profile>(nft_address);
+        let profile2 = borrow_global<Profile>(nft_address2);
+
+        let expected_profile_name = string_utils::format2(
+            &b"Profile #{} : {}",
+            string_utils::to_string(&0),
+            username_to_claim
+        );
+        let expected_profile_name2 = string_utils::format2(
+            &b"Profile #{} : {}",
+            string_utils::to_string(&1),
+            second_username_to_claim
+        );
+
+        assert!(profile.name == expected_profile_name, 12);
+        assert!(profile2.name == expected_profile_name2, 13);
+
+
+        debug::print<String>(&expected_profile_name);
+        debug::print<Profile>(profile);
+        debug::print<String>(&expected_profile_name2);
+        debug::print<Profile>(profile2);
+    }
+
+    // assert claim 4 users, 2 with old and 2 with patch, the second user for each case will be reffered by the first
+    #[test(admin = @kade, user = @0xCED, user2 = @0x54, user3 = @0x55, user4 = @0x56, aptos_framework = @aptos_framework)]
+    fun test_claim_4_users_2_old_2_patch(admin: &signer, user: &signer, user2: &signer, user3: &signer, user4: &signer, aptos_framework: &signer) acquires PatchState, State {
+        let admin_address = signer::address_of(admin);
+        let user_address = signer::address_of(user);
+        let user2_address = signer::address_of(user2);
+        let user3_address = signer::address_of(user3);
+        let user4_address = signer::address_of(user4);
+        let aptos_framework_address = signer::address_of(aptos_framework);
+        let resource_address = account::create_resource_address(&@kade, SEED);
+
+        let aptos = account::create_account_for_test(aptos_framework_address);
+        timestamp::set_time_has_started_for_testing(&aptos);
+        account::create_account_for_test(admin_address);
+        account::create_account_for_test(user_address);
+        account::create_account_for_test(user2_address);
+        account::create_account_for_test(user3_address);
+        account::create_account_for_test(user4_address);
+
+        init_module(admin);
+        patch_init_module(admin);
+
+        let username_to_claim = string::utf8(b"kade");
+        let second_username_to_claim = string::utf8(b"not kade");
+        let third_username_to_claim = string::utf8(b"not kade 2");
+        let fourth_username_to_claim = string::utf8(b"not kade 3");
+
+        claim_username(user, username_to_claim);
+        patch_claim_username(user3, third_username_to_claim);
+
+        claim_username_reffered(user2, second_username_to_claim, user_address);
+        patch_claim_username_reffered(user4, fourth_username_to_claim, user3_address);
+
+        mint_profile_nft(user, 1);
+        patch_mint_profile_nft(user3, third_username_to_claim, 1);
+        mint_profile_nft(user2, 1);
+        patch_mint_profile_nft(user4, fourth_username_to_claim, 1);
+
+        let state = borrow_global<State>(resource_address);
+        let patchState = borrow_global<PatchState>(resource_address);
+
+        let mint_events_count = event::counter(&state.profile_mint_event);
+
+        assert!(mint_events_count == 4, 7);
+
+        assert!(simple_map::contains_key(&state.minted_nfts, &user_address), 8);
+
+        assert!(smart_table::contains(&patchState.minted_nfts, user3_address), 9);
+
+        assert!(simple_map::contains_key(&state.minted_nfts, &user2_address), 10);
+
+        assert!(smart_table::contains(&patchState.minted_nfts, user3_address), 11);
+
+        let nft_address = *simple_map::borrow(&state.minted_nfts, &user_address);
+
+        let nft_address2 = *smart_table::borrow(&patchState.minted_nfts, user3_address);
+
+        let nft_address3 = *simple_map::borrow(&state.minted_nfts, &user2_address);
+
+        let nft_address4 = *smart_table::borrow(&patchState.minted_nfts, user4_address);
+
+        assert!(exists<Profile>(nft_address), 12);
+
+        assert!(exists<Profile>(nft_address2), 13);
+
+        assert!(exists<Profile>(nft_address3), 14);
+
+        assert!(exists<Profile>(nft_address4), 15);
+
+
+    }
+
+
+    // Test patch view functions
+    #[test(admin = @kade, user = @0xCED, aptos_framework = @aptos_framework)]
+    fun test_patch_get_profile_nft_success(admin: &signer, user: &signer, aptos_framework: &signer) acquires State, Profile, PatchState {
+        let admin_address = signer::address_of(admin);
+        let user_address = signer::address_of(user);
+        let aptos_framework_address = signer::address_of(aptos_framework);
+
+        let aptos =account::create_account_for_test(aptos_framework_address);
+        timestamp::set_time_has_started_for_testing(&aptos);
+        account::create_account_for_test(admin_address);
+        account::create_account_for_test(user_address);
+
+        init_module(admin);
+        patch_init_module(admin);
+
+        let username_to_claim = string::utf8(b"kade");
+
+        claim_username(user, username_to_claim);
+
+        mint_profile_nft(user, 1);
+
+        let (profile_name, variant, uri) = get_profile_nft(user_address);
+        let (patch_profile_name, patch_variant, patch_uri) = patch_get_profile_nft(user_address);
+
+        let expected_profile_name = string_utils::format2(&b"Profile #{} : {}",string_utils::to_string(&0), username_to_claim);
+
+        assert!(profile_name == patch_profile_name, 7);
+        assert!(expected_profile_name == patch_profile_name, 7);
+        assert!(variant == patch_variant, 8);
+        assert!(uri == patch_uri, 9);
+
+    }
+
+    // Test patch view functions
+    #[test(admin = @kade, user = @0xCED, aptos_framework = @aptos_framework)]
+    fun test_patch_user_exists_success(admin: &signer, user: &signer, aptos_framework: &signer) acquires State, PatchState {
+        let admin_address = signer::address_of(admin);
+        let user_address = signer::address_of(user);
+        let aptos_framework_address = signer::address_of(aptos_framework);
+
+        let aptos = account::create_account_for_test(aptos_framework_address);
+        timestamp::set_time_has_started_for_testing(&aptos);
+        account::create_account_for_test(admin_address);
+        account::create_account_for_test(user_address);
+
+        init_module(admin);
+        patch_init_module(admin);
+
+        let username_to_claim = string::utf8(b"kade");
+
+        claim_username(user, username_to_claim);
+
+        let exists = user_exists(user_address);
+        let patch_exists = patch_user_exists(user_address);
+
+        assert!(exists == patch_exists, 7);
+    }
+
+    // Test get claimed username
+    #[test(admin = @kade, user = @0xCED, aptos_framework = @aptos_framework)]
+    fun test_get_claimed_username_success(admin: &signer, user: &signer, aptos_framework: &signer) acquires State, PatchState {
+        let admin_address = signer::address_of(admin);
+        let user_address = signer::address_of(user);
+        let aptos_framework_address = signer::address_of(aptos_framework);
+
+        let aptos = account::create_account_for_test(aptos_framework_address);
+        timestamp::set_time_has_started_for_testing(&aptos);
+        account::create_account_for_test(admin_address);
+        account::create_account_for_test(user_address);
+
+        init_module(admin);
+        patch_init_module(admin);
+
+        let username_to_claim = string::utf8(b"kade");
+
+        claim_username(user, username_to_claim);
+
+        let claimed_username = get_claimed_username(user_address);
+        let patch_claimed_username = patch_get_claimed_username(user_address);
+
+        debug::print(&claimed_username);
+
+        assert!(claimed_username == patch_claimed_username, 7);
+    }
+
+
+
 
 }
