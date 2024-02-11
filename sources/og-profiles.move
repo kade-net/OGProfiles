@@ -398,6 +398,7 @@ module kade::OGProfilesNFTv1 {
     }
 
     public entry fun patch_claim_username(claimer: &signer, username: String) acquires PatchState, State {
+        assert!(string::length(&username) > 0, EOperationNotPermitted);
         let resource_address = account::create_resource_address(&@kade, SEED);
         let patchState = borrow_global_mut<PatchState>(resource_address);
         let existingState = borrow_global_mut<State>(resource_address);
@@ -424,6 +425,7 @@ module kade::OGProfilesNFTv1 {
     }
 
     public entry  fun patch_claim_username_reffered(claimer: &signer, username: String, refferer: address, ) acquires PatchState, State {
+        assert!(string::length(&username) > 0, EOperationNotPermitted);
         let resource_address = account::create_resource_address(&@kade, SEED);
         let patchState = borrow_global_mut<PatchState>(resource_address);
         let existingState = borrow_global_mut<State>(resource_address);
@@ -459,7 +461,8 @@ module kade::OGProfilesNFTv1 {
             timestamp_seconds: timestamp::now_seconds(),
         });
     }
-    public entry fun patch_mint_profile_nft(claimer: &signer, claimerUsername: String, variant: u64) acquires PatchState, State {
+
+    public entry fun patch_mint_profile_nft(claimer: &signer, variant: u64) acquires PatchState, State {
         assert!(!patch_has_profile_nft(signer::address_of(claimer)), EOperationNotPermitted);
         let resource_address = account::create_resource_address(&@kade, SEED);
 
@@ -467,13 +470,25 @@ module kade::OGProfilesNFTv1 {
         let patchState = borrow_global_mut<PatchState>(resource_address);
 
         assert!(vector::contains(&patchState.existing_accounts, &signer::address_of(claimer)), EOperationNotPermitted);
-        assert!(smart_table::contains(&patchState.claimed_usernames, claimerUsername), EAddressDoesNotExist);
 
-        let storedAddress = *smart_table::borrow(&patchState.claimed_usernames, claimerUsername);
-        assert!(storedAddress == signer::address_of(claimer), EOperationNotPermitted);
+
+        let username: string::String = string::utf8(b"");
+
+        let exists = smart_table::any(&patchState.claimed_usernames, |_username, _address| {
+            let _username: &string::String = _username;
+            let _address: &address = _address;
+            if(*_address == signer::address_of(claimer)){
+                username = *_username;
+                true
+            }else{
+                false
+            }
+        });
+
+        assert!(exists, EAddressDoesNotExist);
 
         let resource_signer = account::create_signer_with_capability(&state.signer_capability);
-        let username = claimerUsername;
+
         let count = string_utils::to_string(&state.minted_profiles);
         state.minted_profiles = state.minted_profiles + 1;
         let profile_nft_uri = string::utf8(b"");
@@ -521,6 +536,10 @@ module kade::OGProfilesNFTv1 {
             owner: signer::address_of(claimer),
             profile_address: nft_address,
         });
+
+
+
+
     }
 
     inline fun patch_assert_username_unclaimed(username: String, claimed: &SmartTable<String, address>)  {
@@ -633,20 +652,20 @@ module kade::OGProfilesNFTv1 {
         let resource_address = account::create_resource_address(&@kade, SEED);
         let state = borrow_global<State>(resource_address);
         let patchState = borrow_global<PatchState>(resource_address);
-        if(!smart_table::contains(&patchState.minted_nfts, claimer_address)){
-            return false
-        }else if(!simple_map::contains_key(&state.minted_nfts, &claimer_address)){
-            return false
-        }else if(smart_table::contains(&patchState.minted_nfts, claimer_address)){
+
+        // check if address exists
+
+        if(smart_table::contains(&patchState.minted_nfts, claimer_address)){
             let nft_address = *smart_table::borrow(&patchState.minted_nfts, claimer_address);
-            let e = exists<Profile>(nft_address);
-            return e
-        }else if(simple_map::contains_key(&state.minted_nfts, &claimer_address)){
+            return exists<Profile>(nft_address)
+        };
+
+        if(simple_map::contains_key(&state.minted_nfts, &claimer_address)){
             let nft_address = *simple_map::borrow(&state.minted_nfts, &claimer_address);
-            exists<Profile>(nft_address)
-        } else {
-            return false
-        }
+            return exists<Profile>(nft_address)
+        };
+
+        false
     }
 
     // Get the user's profile nft
@@ -1243,7 +1262,7 @@ module kade::OGProfilesNFTv1 {
 
         patch_claim_username(user, username_to_claim);
 
-        patch_mint_profile_nft(user, username_to_claim, 1);
+        patch_mint_profile_nft(user, 1);
 
         let state = borrow_global<State>(resource_address);
         let patchState = borrow_global<PatchState>(resource_address);
@@ -1290,7 +1309,7 @@ module kade::OGProfilesNFTv1 {
         patch_claim_username(user2, second_username_to_claim);
 
         mint_profile_nft(user, 1);
-        patch_mint_profile_nft(user2, second_username_to_claim, 1);
+        patch_mint_profile_nft(user2, 1);
 
         let state = borrow_global<State>(resource_address);
         let patchState = borrow_global<PatchState>(resource_address);
@@ -1366,9 +1385,9 @@ module kade::OGProfilesNFTv1 {
         patch_claim_username_reffered(user4, fourth_username_to_claim, user3_address);
 
         mint_profile_nft(user, 1);
-        patch_mint_profile_nft(user3, third_username_to_claim, 1);
+        patch_mint_profile_nft(user3, 1);
         mint_profile_nft(user2, 1);
-        patch_mint_profile_nft(user4, fourth_username_to_claim, 1);
+        patch_mint_profile_nft(user4, 1);
 
         let state = borrow_global<State>(resource_address);
         let patchState = borrow_global<PatchState>(resource_address);
@@ -1488,6 +1507,62 @@ module kade::OGProfilesNFTv1 {
         debug::print(&claimed_username);
 
         assert!(claimed_username == patch_claimed_username, 7);
+    }
+
+    // test patch has profile nft success
+    #[test(admin = @kade, user = @0xCED,  aptos_framework = @aptos_framework)]
+    fun test_patch_has_profile_nft_success(admin: &signer, user: &signer, aptos_framework: &signer) acquires State, PatchState {
+        let admin_address = signer::address_of(admin);
+        let user_address = signer::address_of(user);
+        let aptos_framework_address = signer::address_of(aptos_framework);
+
+        let aptos = account::create_account_for_test(aptos_framework_address);
+        timestamp::set_time_has_started_for_testing(&aptos);
+        account::create_account_for_test(admin_address);
+        account::create_account_for_test(user_address);
+
+        init_module(admin);
+        patch_init_module(admin);
+
+        let username_to_claim = string::utf8(b"kade");
+
+        claim_username(user, username_to_claim);
+
+        mint_profile_nft(user, 1);
+
+        let has_nft = has_profile_nft(user_address);
+        let patch_has_nft = patch_has_profile_nft(user_address);
+
+        assert!(has_nft == patch_has_nft, 7);
+
+    }
+
+    // test patch has profile nft success with patch mint
+    #[test(admin = @kade, user = @0xCED,  aptos_framework = @aptos_framework)]
+    fun test_patch_has_profile_nft_success_with_patch_mint(admin: &signer, user: &signer, aptos_framework: &signer) acquires State, PatchState {
+        let admin_address = signer::address_of(admin);
+        let user_address = signer::address_of(user);
+        let aptos_framework_address = signer::address_of(aptos_framework);
+
+        let aptos = account::create_account_for_test(aptos_framework_address);
+        timestamp::set_time_has_started_for_testing(&aptos);
+        account::create_account_for_test(admin_address);
+        account::create_account_for_test(user_address);
+
+        init_module(admin);
+        patch_init_module(admin);
+
+        let username_to_claim = string::utf8(b"kade");
+
+        patch_claim_username(user, username_to_claim);
+
+        patch_mint_profile_nft(user, 1);
+
+
+        let patch_has_nft = patch_has_profile_nft(user_address);
+
+        assert!(patch_has_nft, 7);
+
     }
 
 
